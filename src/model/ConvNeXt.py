@@ -1,8 +1,9 @@
 import torch
+import torch.nn.functional as F
 
 from torch import nn
 
-from .util import DiagonalGaussian, FiLM, CrossAttentionBlock
+from .util import DiagonalGaussian, FiLM, CrossAttentionBlock, SinusoidalEmbedding, SwiGLU
 
 
 class GRN(nn.Module):
@@ -274,3 +275,74 @@ class ConditionalUNet(nn.Module):
                 x = block(x, t, context, attention_mask)
 
         return self.head(x)
+
+
+class LatentDiffuser(nn.Module):
+    def __init__(
+            self, encoder, decoder, latent_scale, context_encoder, in_channels, d_init, d_t, n_heads_init,
+            n_scales=3, blocks_per_scale=1,
+            resid_dropout=0.0, attn_dropout=0.0, norm_eps=1e-6,
+            t_min=1.0, t_max=10.0
+    ):
+        super(LatentDiffuser, self).__init__()
+        self.t_max = t_max
+        self.t_min = t_min
+        self.t_range = t_max - t_min
+        self.latent_scale = latent_scale
+
+        self.encode = encoder
+        self.encode.eval()
+        self.encode.requires_grad_(False)
+
+        self.decode = decoder
+        self.decode.eval()
+        self.decode.requires_grad_(False)
+
+        self.encode_context = context_encoder
+        self.encode_context.eval()
+        self.encode_context.requires_grad_(False)
+
+        self.t_model = nn.Sequential(
+            SinusoidalEmbedding(d_t),
+            SwiGLU(d_t)
+        )
+
+        d_context = context_encoder.config.projection_dim
+        self.unet = ConditionalUNet(
+            in_channels, d_init, d_context, d_t, n_heads_init, n_scales, blocks_per_scale,
+            resid_dropout, attn_dropout, norm_eps
+        )
+
+    def add_noise(self, z_0, eps=None, t=None):
+        B = z_0.shape[0]
+
+        return_eps = (eps is None)
+        return_t = (t is None)
+
+        if eps is None:
+            eps = torch.randn_like(z_0)
+        if t is None:
+            t = torch.rand(B, device=z_0.device) * self.t_range + self.t_min
+
+        t = t.view(-1, 1, 1, 1)
+        z_t = (z_0 + eps * t) / torch.sqrt(t.pow(2) + 1)
+
+        if return_eps and return_t:
+            return z_t, eps, t
+        if return_eps:
+            return z_t, eps
+        if return_t:
+            return z_t, t
+        return z_t
+
+    def forward(self, x, tokens, attention_mask=None):
+        context = self.encode_context(tokens, attention_mask=attention_mask)
+
+        z_0 = self.encode(x) * self.latent_scale
+
+        z_t, eps, t = self.add_noise(z_0)
+
+        t_emb = self.t_model(t)
+        pred_eps = self.unet(x, t_emb, context, attention_mask=attention_mask)
+
+        return F.mse_loss(eps, pred_eps)
