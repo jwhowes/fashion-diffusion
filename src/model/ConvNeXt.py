@@ -76,42 +76,73 @@ class ConvNeXtV2Block(nn.Module):
         return residual + self.dropout(x)
 
 
+class ConvNeXtV2(nn.Module):
+    def __init__(self, in_channels, d_init, n_scales, blocks_per_scale, dropout=0.0):
+        super(ConvNeXtV2, self).__init__()
+        scale = 1
+
+        self.stem = nn.Conv2d(in_channels, d_init, kernel_size=7, padding=3)
+        self.down_path = nn.ModuleList()
+        self.down_samples = nn.ModuleList()
+        for i in range(n_scales - 1):
+            blocks = nn.ModuleList()
+            for j in range(blocks_per_scale):
+                blocks.append(ConvNeXtV2Block(
+                    d_init * scale, dropout=dropout
+                ))
+            self.down_path.append(blocks)
+            self.down_samples.append(nn.Conv2d(d_init * scale, d_init * 2 * scale, kernel_size=2, stride=2))
+            scale *= 2
+
+        self.mid_blocks = nn.ModuleList()
+        for i in range(blocks_per_scale):
+            self.mid_blocks.append(ConvNeXtV2Block(d_init * scale, dropout=dropout))
+
+    def forward(self, x):
+        x = self.stem(x)
+        for down_blocks, down_sample in zip(self.down_path, self.down_samples):
+            for block in down_blocks:
+                x = block(x)
+            x = down_sample(x)
+
+        for block in self.mid_blocks:
+            x = block(x)
+
+        return x
+
+
+class Classifier(nn.Module):
+    def __init__(
+            self, in_channels, num_classes,
+            d_init=32, n_scales=4, blocks_per_scale=1, dropout=0.0
+    ):
+        super(Classifier, self).__init__()
+        self.encoder = ConvNeXtV2(in_channels, d_init, n_scales, blocks_per_scale, dropout)
+        self.pooler = nn.AdaptiveAvgPool2d((1, 1))
+
+        scale = 2 ** (n_scales - 1)
+        self.classifier = nn.Linear(d_init * scale, num_classes)
+
+    def forward(self, x):
+        x = self.encoder(x)
+
+        x = self.pooler(x).squeeze()
+        return self.classifier(x)
+
+
 class VAEEncoder(nn.Module):
     def __init__(
             self, in_channels, latent_channels,
             d_init=32, n_scales=4, blocks_per_scale=1, dropout=0.0
     ):
         super(VAEEncoder, self).__init__()
-        scale = 1
+        self.encoder = ConvNeXtV2(in_channels, d_init, n_scales, blocks_per_scale, dropout)
 
-        self.stem = nn.Conv2d(in_channels, d_init, kernel_size=3, padding=1)
-        self.down_path = nn.ModuleList()
-        self.down_samples = nn.ModuleList()
-        for i in range(n_scales - 1):
-            blocks = nn.ModuleList()
-            for j in range(blocks_per_scale):
-                blocks.append(ConvNeXtV2Block(d_init * scale, dropout=dropout))
-
-            self.down_path.append(blocks)
-            self.down_samples.append(nn.Conv2d(scale * d_init, 2 * scale * d_init, kernel_size=2, stride=2))
-            scale *= 2
-        
-        self.mid_blocks = nn.ModuleList()
-        for i in range(blocks_per_scale):
-            self.mid_blocks.append(ConvNeXtV2Block(d_init * scale, dropout=dropout))
-
+        scale = 2 ** (n_scales - 1)
         self.head = nn.Conv2d(scale * d_init, 2 * latent_channels, kernel_size=1)
 
     def forward(self, x):
-        x = self.stem(x)
-        for down_sample, down_blocks in zip(self.down_samples, self.down_path):
-            for down_block in down_blocks:
-                x = down_block(x)
-            x = down_sample(x)
-
-        for block in self.mid_blocks:
-            x = block(x)
-
+        x = self.encoder(x)
         mean, log_var = self.head(x).chunk(dim=1, chunks=2)
 
         return DiagonalGaussian(mean=mean, log_var=log_var)
@@ -123,7 +154,7 @@ class VAEDecoder(nn.Module):
             d_init=32, n_scales=4, blocks_per_scale=1, dropout=0.0
     ):
         super(VAEDecoder, self).__init__()
-        scale = 2 ** n_scales
+        scale = 2 ** (n_scales - 1)
         
         self.stem = nn.Conv2d(latent_channels, scale * d_init, kernel_size=3, padding=1)
         self.mid_blocks = nn.ModuleList()

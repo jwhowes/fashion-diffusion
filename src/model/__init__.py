@@ -1,6 +1,6 @@
 from torch import nn
 
-from .ConvNeXt import VAE
+from .ConvNeXt import VAE, Classifier
 
 
 def init_params(model: nn.Module):
