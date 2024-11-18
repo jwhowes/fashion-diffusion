@@ -62,10 +62,13 @@ class FiLM(nn.Module):
         return g * self.norm(x) + b
 
 
-class CrossAttentionBlock(nn.Module):
-    def __init__(self, d_model, d_context, n_heads):
-        super(CrossAttentionBlock, self).__init__()
+class Attention(nn.Module):
+    def __init__(self, d_model, n_heads, d_context=None):
+        super(Attention, self).__init__()
         assert d_model % n_heads == 0
+        if d_context is None:
+            d_context = d_model
+
         self.n_heads = n_heads
         self.scale = sqrt(d_model // n_heads)
 
@@ -77,27 +80,27 @@ class CrossAttentionBlock(nn.Module):
 
     def forward(self, x_q, x_kv, attention_mask=None):
         """
-        :param x_q: FloatTensor B x h x w x d_model
-        :param x_kv: FloatTensor B x L x d_context
+        :param x_q: FloatTensor B x L_q x d_model
+        :param x_kv: FloatTensor B x L_kv x d_context
         :param attention_mask: FloatTensor (B x L | B x (h * w) x L)
         :return: FloatTensor B x d_model x h w
         """
-        B, h, w, _ = x_q.shape
-        L = x_kv.shape[1]
+        B, L_q, _ = x_q.shape
+        L_kv = x_kv.shape[1]
 
-        q = self.W_q(x_q).view(B, h * w, self.n_heads, -1).transpose(1, 2)
-        k = self.W_k(x_kv).view(B, L, self.n_heads, -1).transpose(1, 2)
-        v = self.W_v(x_kv).view(B, L, self.n_heads, -1).transpose(1, 2)
+        q = self.W_q(x_q).view(B, L_q, self.n_heads, -1).transpose(1, 2)
+        k = self.W_k(x_kv).view(B, L_kv, self.n_heads, -1).transpose(1, 2)
+        v = self.W_v(x_kv).view(B, L_kv, self.n_heads, -1).transpose(1, 2)
 
         attn = (q @ k.transpose(-2, -1)) / self.scale
 
         if attention_mask is not None:
-            attn = attn + attention_mask.view(B, 1, -1, L)
+            attn = attn + attention_mask.view(B, 1, -1, L_kv)
 
         x = F.softmax(attn, dim=-1) @ v
 
         return self.W_o(
-            x.transpose(1, 2).contiguous().view(B, h, w, -1)
+            x.transpose(1, 2).contiguous().view(B, L_q, -1)
         )
 
 

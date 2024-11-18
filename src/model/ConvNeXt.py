@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 from torch import nn
 
-from .util import DiagonalGaussian, FiLM, CrossAttentionBlock, SinusoidalEmbedding, SwiGLU
+from .util import DiagonalGaussian, FiLM, Attention, SinusoidalEmbedding, SwiGLU
 
 
 class GRN(nn.Module):
@@ -212,21 +212,22 @@ class VAE(nn.Module):
 class ConditionalConvNeXtDiffuserBlock(nn.Module):
     def __init__(self, d_model, d_context, d_t, n_heads, resid_dropout=0.0, attn_dropout=0.0, norm_eps=1e-6):
         super(ConditionalConvNeXtDiffuserBlock, self).__init__()
-        self.attn = CrossAttentionBlock(d_model, d_context, n_heads)
+        self.attn = Attention(d_model, n_heads, d_context=d_context)
         self.attn_norm = FiLM(d_t, d_model, eps=norm_eps)
         self.attn_dropout = nn.Dropout(attn_dropout)
 
         self.ffn = FiLMConvNeXtV2Block(d_model, d_t, resid_dropout, norm_eps)
 
     def forward(self, x, t, context, attention_mask=None):
+        B, C, H, W = x.shape
         x = x.permute(0, 2, 3, 1)
         x = x + self.attn_dropout(
             self.attn(
-                self.attn_norm(x, t), context, attention_mask=attention_mask
+                self.attn_norm(x, t).view(B, H * W, C), context, attention_mask=attention_mask
             )
-        )
-
+        ).view(B, H, W, C)
         x = x.permute(0, 3, 1, 2)
+
         return self.ffn(x, t)
 
 
