@@ -10,7 +10,7 @@ from src.model import VAE, init_params, Classifier
 from src.data import ImageDataset
 
 
-def train(model, discriminator, dataloader, kl_weight=1e-6):
+def train(model, discriminator, dataloader, kl_weight=1e-6, adv_weight=0.5):
     num_epochs = 5
     opt = torch.optim.Adam(model.parameters(), lr=5e-5)
     disc_opt = torch.optim.Adam(discriminator.parameters(), lr=5e-5)
@@ -53,7 +53,7 @@ def train(model, discriminator, dataloader, kl_weight=1e-6):
             recon_loss = F.mse_loss(recon, image)
             kl_loss = dist.kl
             adv_loss = F.binary_cross_entropy_with_logits(adv_pred, torch.ones_like(adv_pred))
-            loss = recon_loss + kl_weight * kl_loss + adv_loss
+            loss = recon_loss + kl_weight * kl_loss + adv_weight * adv_loss
 
             accelerator.backward(loss)
             accelerator.clip_grad_norm_(model.parameters(), 1.0)
@@ -71,7 +71,7 @@ def train(model, discriminator, dataloader, kl_weight=1e-6):
             accelerator.clip_grad_norm_(discriminator.parameters(), 1.0)
             disc_opt.step()
 
-            if i % 1 == 0:
+            if i % 10 == 0:
                 print(f"\t{i} / {len(dataloader)} iters."
                       f"\t\tRecon Loss: {recon_loss.item():.3f}"
                       f"\t\tKL Loss: {kl_loss.item():.3f}"
@@ -86,6 +86,7 @@ def train(model, discriminator, dataloader, kl_weight=1e-6):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--kl-weight", type=float, default=1e-6)
+    parser.add_argument("--adv-weight", type=float, default=0.5)
     parser.add_argument("--d-init", type=int, default=64)
     parser.add_argument("--n-scales", type=int, default=3)
     parser.add_argument("--blocks-per-scale", type=int, default=1)
@@ -119,4 +120,4 @@ if __name__ == "__main__":
         pin_memory=True
     )
 
-    train(model,discriminator, dataloader, kl_weight=args.kl_weight)
+    train(model,discriminator, dataloader, kl_weight=args.kl_weight, adv_weight=args.adv_weight)
